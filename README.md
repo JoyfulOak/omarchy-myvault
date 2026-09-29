@@ -49,7 +49,7 @@ omarchy restart shell
 ```
 
 Replace the example URL with the repository where this fork is published. The
-upstream `anelcelik/myvault` URL may install upstream code rather than the
+upstream `anelcelik/omavault` URL may install upstream code rather than the
 Documents/apps/GitHub additions described here.
 
 ### Install from a local checkout
