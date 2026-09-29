@@ -4,7 +4,7 @@
 # without touching anything on this machine. Used before Import shows its
 # category checklist, and to render a PASS/FAIL integrity badge.
 #
-# Every OmaVault backup is encrypted (see export.sh), so a snapshot straight
+# Every MyVault backup is encrypted (see export.sh), so a snapshot straight
 # off a stick has nothing readable pre-decrypt -- not even manifest.json.
 # Call decrypt-snapshot.sh first and re-inspect its tempDir; this script
 # reports that "nothing is readable yet" state as {locked:true}, not an
@@ -25,7 +25,7 @@ if [ ! -f "$manifest" ]; then
       '{ok:true, path:$path, encrypted:true, locked:true, manifest:null, checksumOk:false, checksumTotal:0, failedFiles:[]}'
     exit 0
   fi
-  fail "No manifest.json or payload.tar.gpg in this folder -- not an OmaVault snapshot."
+  fail "No manifest.json or payload.tar.gpg in this folder -- not a MyVault snapshot."
 fi
 jq -e . "$manifest" >/dev/null 2>&1 || fail "manifest.json is not valid JSON."
 

@@ -25,7 +25,7 @@ IFS= read -r passphrase
 # including an unexpected early exit, so a botched decrypt can't leave
 # plaintext sitting in tmpfs either.
 base=$(verified_runtime_dir) || fail "Refusing to decrypt: $base"
-tmpDir=$(mktemp -d "$base/omavault-decrypt-XXXXXX") || fail "Could not create a temp folder."
+tmpDir=$(mktemp -d "$base/myvault-decrypt-XXXXXX") || fail "Could not create a temp folder."
 chmod 700 "$tmpDir"
 trap 'passphrase=""; rm -rf "$tmpDir"' EXIT
 
@@ -41,7 +41,7 @@ gpgErr="$tmpDir/.gpg-err"
 if ! ( ulimit -f $((MAX_BACKUP_BYTES / 512))
        printf '%s' "$passphrase" | gpg --batch --yes --passphrase-fd 0 --pinentry-mode loopback \
          -d "$dir/payload.tar.gpg" >"$tmpDir/.payload.tar" 2>"$gpgErr" ); then
-  fail "Wrong passphrase, this backup is corrupted, or the decrypted archive exceeds the $((MAX_BACKUP_BYTES / 1024 / 1024)) MiB limit for a config backup."
+  fail "Wrong passphrase, this backup is corrupted, or the decrypted archive exceeds the $((MAX_BACKUP_BYTES / 1024 / 1024)) MiB limit for this backup."
 fi
 passphrase=""
 
@@ -84,14 +84,14 @@ while IFS= read -r line; do
   totalBytes=$((totalBytes + ${size:-0}))
 done < <(tar -tvf "$tmpDir/.payload.tar" 2>/dev/null)
 if [ "$totalBytes" -gt "$MAX_BACKUP_BYTES" ]; then
-  fail "Backup rejected: archive is implausibly large ($totalBytes bytes) for a config backup."
+  fail "Backup rejected: archive is implausibly large ($totalBytes bytes) for this backup."
 fi
 
 if ! tar -xf "$tmpDir/.payload.tar" -C "$tmpDir"; then
   fail "Decrypted, but could not unpack the backup -- it may be corrupted."
 fi
 rm -f "$tmpDir/.payload.tar" "$gpgErr"
-# manifest.json comes out of the tar itself now -- every OmaVault backup is
+# manifest.json comes out of the tar itself now -- every MyVault backup is
 # fully encrypted, nothing (including manifest.json) is ever left plain
 # next to payload.tar.gpg to copy from.
 

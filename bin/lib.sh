@@ -1,5 +1,5 @@
 #!/bin/bash
-# Shared category registry + helpers for OmaVault's export/import scripts.
+# Shared category registry + helpers for MyVault's export/import scripts.
 # Every category maps one or more real config locations under $HOME to a
 # path inside a snapshot that mirrors it 1:1 (config/omarchy/..., dotfiles/
 # .bashrc, ...) -- a snapshot is a browsable mini home directory, not a
@@ -42,6 +42,8 @@ list_category_meta() {
   if [ -d "$CONFIG_DIR/nvim" ] || [ -f "$HOME_DIR/.bashrc" ] || [ -f "$HOME_DIR/.zshrc" ] || [ -f "$HOME_DIR/.gitconfig" ]; then
     printf 'extra\tShell & editor dotfiles\tOptional: ~/.config/nvim plus .bashrc/.zshrc/.bash_profile/.zprofile/.gitconfig/.profile. Off by default -- these can bake in machine-specific paths that do not always carry over cleanly.\t0\n'
   fi
+  [ -d "$HOME_DIR/Documents" ] && printf 'documents\tDocuments\tFiles under ~/Documents, including binary documents and media. Symlinks are skipped. The current 128 MiB encrypted-snapshot limit applies.\t1\n'
+  { command -v pacman >/dev/null 2>&1 || command -v flatpak >/dev/null 2>&1; } && printf 'apps\tInstalled apps\tPackage inventory for Arch explicit packages, foreign/AUR packages, Flatpak apps, and enabled Omarchy plugins. Restore copies the inventory; reinstalling packages is a separate confirmed terminal action.\t1\n'
 }
 
 # Emits "srcAbsPath<TAB>relSnapshotPath<TAB>kind(dir|file)<TAB>extraExcludeArg"
@@ -74,6 +76,12 @@ category_entries() {
         printf '%s\t%s\tfile\t\n' "$HOME_DIR/$f" "dotfiles/$f"
       done
       ;;
+    documents)
+      printf '%s\t%s\tdir\t\n' "$HOME_DIR/Documents" "Documents"
+      ;;
+    apps)
+      printf '%s\t%s\tdir\t\n' "$HOME_DIR/.local/state/myvault/apps" "app-inventory"
+      ;;
   esac
 }
 
@@ -97,6 +105,32 @@ json_escape() {
 # headroom, not a target -- see decrypt-snapshot.sh for how it's enforced
 # as an actual producer-side write limit, not just a post-hoc check.
 MAX_BACKUP_BYTES=$((128 * 1024 * 1024)) # 128 MiB
+
+# Capture portable application/package inventories. These are names/lists,
+# not application binaries; reinstalling is a separate confirmed action.
+capture_app_inventory() {
+  local out="$1"
+  mkdir -p "$out"
+  : >"$out/arch-explicit.txt"
+  : >"$out/arch-foreign.txt"
+  : >"$out/flatpak-apps.txt"
+  if command -v pacman >/dev/null 2>&1; then
+    pacman -Qqen 2>/dev/null | sort -u >"$out/arch-explicit.txt" || :
+    pacman -Qqem 2>/dev/null | sort -u >"$out/arch-foreign.txt" || :
+  fi
+  if command -v flatpak >/dev/null 2>&1; then
+    flatpak list --app --columns=application 2>/dev/null | sed '/^[[:space:]]*$/d' | sort -u >"$out/flatpak-apps.txt" || :
+  fi
+  if command -v omarchy >/dev/null 2>&1; then
+    omarchy plugin list --json 2>/dev/null | jq -e 'type == "array"' >"$out/omarchy-plugins.json" 2>/dev/null || rm -f "$out/omarchy-plugins.json"
+  fi
+  jq -n --arg createdAt "$(date -Iseconds)" \
+    --arg explicit "$(wc -l <"$out/arch-explicit.txt" 2>/dev/null || echo 0)" \
+    --arg foreign "$(wc -l <"$out/arch-foreign.txt" 2>/dev/null || echo 0)" \
+    --arg flatpak "$(wc -l <"$out/flatpak-apps.txt" 2>/dev/null || echo 0)" \
+    '{schemaVersion:1,createdAt:$createdAt,counts:{archExplicit:($explicit|tonumber),archForeign:($foreign|tonumber),flatpakApps:($flatpak|tonumber)},note:"Inventories only; these files do not contain application binaries."}' \
+    >"$out/inventory.json"
+}
 
 # Resolves $XDG_RUNTIME_DIR to a scratch base we actually trust to be
 # private and memory-backed, or fails. There is deliberately no fallback

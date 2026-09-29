@@ -5,7 +5,7 @@ import Quickshell.Wayland
 import qs.Commons
 import qs.Ui
 
-// OmaVault: back up this machine's Omarchy setup (bar/dock/search/theme
+// MyVault: back up this machine's Omarchy setup (bar/dock/search/theme
 // settings, installed plugins, Hyprland config, terminal configs, optional
 // dotfiles) to a folder tree -- typically a USB stick -- as a single
 // AES-256 encrypted, password-required payload.tar.gpg (no plain-text
@@ -17,9 +17,9 @@ import qs.Ui
 BarWidget {
   id: root
 
-  moduleName: "io.github.anelcelik.omavault"
+  moduleName: "io.github.joyfuloak.myvault"
 
-  readonly property string pluginDir: Quickshell.env("HOME") + "/.config/omarchy/plugins/io.github.anelcelik.omavault"
+  readonly property string pluginDir: Quickshell.env("HOME") + "/.config/omarchy/plugins/io.github.joyfuloak.myvault"
   readonly property string binDir: root.pluginDir + "/bin"
 
   property bool popupOpen: false
@@ -37,6 +37,12 @@ BarWidget {
   property bool exporting: false
   property var exportResult: null
   property string exportError: ""
+  property string githubRepo: ""
+  property bool githubUploading: false
+  property bool githubDownloading: false
+  property string githubStatus: ""
+  property string githubError: ""
+  property bool confirmingGitHubUpload: false
   property string exportPassphrase: ""
   property string exportPassphraseConfirm: ""
 
@@ -157,13 +163,6 @@ BarWidget {
     // Don't leave a decrypted backup's plaintext sitting around once the
     // popup isn't even open any more.
     root.cleanupImportWorkingCopy()
-  }
-
-  // KeyboardPanel's outside-click dismissal calls owner.close() -- see the
-  // same contract noted in OmaHarbor.qml / opentv's BarWidget.qml.
-  QtObject {
-    id: popupOwner
-    function close() { root.close() }
   }
 
   // ---- Category selection ----
@@ -292,6 +291,62 @@ BarWidget {
     } catch (e) {
       root.exportResult = null
       root.exportError = "Export failed -- could not read the script's output."
+    }
+  }
+
+  function requestGitHubUpload() {
+    if (!root.exportResult || !root.githubRepo.trim()) return
+    root.confirmingGitHubUpload = true
+  }
+
+  function doGitHubUpload() {
+    if (githubUploadProc.running || !root.exportResult || !root.githubRepo.trim()) return
+    root.githubError = ""
+    root.githubStatus = ""
+    root.githubUploading = true
+    githubUploadProc.command = ["bash", root.binDir + "/github-upload.sh", root.githubRepo.trim(), root.exportResult.path]
+    githubUploadProc.running = true
+  }
+
+  function handleGitHubUploadResult(text) {
+    root.githubUploading = false
+    try {
+      var result = JSON.parse(String(text || "{}"))
+      if (result.ok) {
+        root.githubStatus = "Encrypted backup uploaded and verified: " + result.url
+        root.githubError = ""
+      } else {
+        root.githubError = result.error || "GitHub upload failed."
+      }
+    } catch (e) {
+      root.githubError = "GitHub upload failed -- could not read the helper output."
+    }
+  }
+
+  function doGitHubDownload() {
+    if (githubDownloadProc.running || !root.githubRepo.trim()) return
+    root.githubError = ""
+    root.githubStatus = ""
+    root.githubDownloading = true
+    githubDownloadProc.command = ["bash", root.binDir + "/github-download.sh", root.githubRepo.trim(), Quickshell.env("HOME") + "/Downloads/myvault-github"]
+    githubDownloadProc.running = true
+  }
+
+  function handleGitHubDownloadResult(text) {
+    root.githubDownloading = false
+    try {
+      var result = JSON.parse(String(text || "{}"))
+      if (result.ok) {
+        root.githubStatus = "Downloaded " + result.tag + "; checking backup..."
+        root.githubError = ""
+        root.activeTab = "import"
+        root.customImportText = result.path
+        root.openImportSource(result.path)
+      } else {
+        root.githubError = result.error || "GitHub download failed."
+      }
+    } catch (e) {
+      root.githubError = "GitHub download failed -- could not read the helper output."
     }
   }
 
@@ -441,18 +496,30 @@ BarWidget {
   Process { id: inspectProc; stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.handleInspectResult(text) } }
   Process { id: importProc; stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.handleImportResult(text) } }
   Process { id: browseProc; stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.handleBrowseResult(text) } }
+  Process { id: githubUploadProc; stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.handleGitHubUploadResult(text) } }
+  Process { id: githubDownloadProc; stdout: StdioCollector { waitForEnd: true; onStreamFinished: root.handleGitHubDownloadResult(text) } }
 
   WidgetButton {
     id: chip
     bar: root.bar
-    text: "OV"
+    text: ""
     foreground: "#4fd1c5"
-    labelVisible: true
+    labelVisible: false
     hasVisualContent: true
-    tooltipText: "OmaVault -- back up / restore your Omarchy setup"
+    tooltipText: "MyVault -- settings vault / backup and restore"
     fixedWidth: root.vertical ? root.barSize : Style.space(30)
     fixedHeight: root.barSize
     onPressed: function(button) { root.togglePopup() }
+
+    Image {
+      anchors.centerIn: parent
+      width: root.barSize * 0.58
+      height: root.barSize * 0.58
+      source: Qt.resolvedUrl("assets/myvault.svg")
+      fillMode: Image.PreserveAspectFit
+      smooth: true
+      mipmap: true
+    }
   }
 
   KeyboardPanel {
@@ -460,14 +527,18 @@ BarWidget {
 
     anchorItem: chip
     bar: root.bar
-    owner: popupOwner
+    owner: root
     open: root.popupOpen
+    focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(420))
     contentHeight: panel.fittedContentHeight(Math.min(mainColumn.implicitHeight, Style.space(580)))
     padding: Style.space(10)
 
-    Item {
+    PanelKeyCatcher {
+      id: keyCatcher
       anchors.fill: parent
+      blocked: destPathField.activeFocus || exportPassphraseField.activeFocus || exportPassphraseConfirmField.activeFocus || exportRepoField.activeFocus || importRepoField.activeFocus || importPathField.activeFocus || unlockPassphraseField.activeFocus || browseFilterField.activeFocus
+      onCloseRequested: root.close()
 
       Flickable {
         id: flick
@@ -488,7 +559,7 @@ BarWidget {
             spacing: Style.space(6)
 
             Text {
-              text: "OmaVault"
+              text: "MyVault"
               color: root.popupForeground()
               font.family: Style.font.family
               font.pixelSize: Style.font.subtitle
@@ -521,8 +592,8 @@ BarWidget {
           Text {
             width: parent.width
             text: root.activeTab === "export"
-              ? "Copies the config files you pick into an AES-256 encrypted backup -- a password is required every time, there is no plain-text option. Nothing is written until you press Export."
-              : "Reads a backup made by OmaVault (decrypted, then checksummed) and copies its files back into place. Anything about to be overwritten is saved first, so nothing existing is ever lost."
+              ? "Copies the Omarchy settings, Hyprland and terminal configs, selected documents, and app/package inventories you pick into an AES-256 encrypted backup -- a password is required every time. App inventories are lists, not binaries. Nothing is written until you press Export."
+              : "Reads a backup made by MyVault (decrypted, then checksummed) and copies its files back into place. Anything about to be overwritten is saved first, so nothing existing is ever lost."
             color: Qt.darker(root.popupForeground(), 1.4)
             font.family: Style.font.family
             font.pixelSize: Style.font.caption
@@ -556,7 +627,9 @@ BarWidget {
                 id: catToggle
                 required property var modelData
                 width: parent.width
-                label: modelData.label + "  ·  " + modelData.fileCount + " files, " + root.formatBytes(modelData.bytes)
+                label: modelData.id === "apps"
+                  ? modelData.label + "  ·  " + modelData.packageCount + " packages"
+                  : modelData.label + "  ·  " + modelData.fileCount + " files, " + root.formatBytes(modelData.bytes)
                 description: modelData.description
                 checked: root.isCategoryOn(modelData.id)
                 foreground: root.popupForeground()
@@ -593,7 +666,7 @@ BarWidget {
                   anchors.rightMargin: Style.space(8)
                   text: driveRow.modelData.label + "  (" + driveRow.modelData.path + ")  ·  "
                     + root.formatBytes(driveRow.modelData.freeBytes) + " free"
-                    + (driveRow.modelData.hasVault ? "  ·  has OmaVault backups" : "")
+                    + (driveRow.modelData.hasVault ? "  ·  has MyVault backups" : "")
                   color: root.popupForeground()
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
@@ -617,6 +690,7 @@ BarWidget {
               spacing: Style.space(6)
 
               TextField {
+                id: destPathField
                 width: parent.width - browseDestButton.width - parent.spacing
                 placeholderText: "...or type/paste a folder path"
                 foreground: root.popupForeground()
@@ -626,6 +700,7 @@ BarWidget {
                   root.customDestText = text
                   if (text.length > 0) root.destPath = text
                 }
+                Keys.onEscapePressed: function(event) { root.close(); event.accepted = true }
               }
 
               Button {
@@ -670,20 +745,24 @@ BarWidget {
               spacing: Style.space(6)
 
               TextField {
+                id: exportPassphraseField
                 width: parent.width
                 placeholderText: "Passphrase"
                 password: true
                 foreground: root.popupForeground()
                 text: root.exportPassphrase
                 onTextChanged: if (text !== root.exportPassphrase) root.exportPassphrase = text
+                Keys.onEscapePressed: function(event) { root.close(); event.accepted = true }
               }
               TextField {
+                id: exportPassphraseConfirmField
                 width: parent.width
                 placeholderText: "Confirm passphrase"
                 password: true
                 foreground: root.popupForeground()
                 text: root.exportPassphraseConfirm
                 onTextChanged: if (text !== root.exportPassphraseConfirm) root.exportPassphraseConfirm = text
+                Keys.onEscapePressed: function(event) { root.close(); event.accepted = true }
               }
               Text {
                 visible: root.exportPassphrase !== "" && root.exportPassphraseConfirm !== "" && !root.exportPassphraseValid()
@@ -742,12 +821,58 @@ BarWidget {
               Text {
                 visible: root.exportResult && root.exportResult.skippedBinaryCount > 0
                 width: parent.width
-                text: root.exportResult ? (root.exportResult.skippedBinaryCount + " non-text file(s) were left out -- see README.txt in the backup.") : ""
+                text: root.exportResult ? (root.exportResult.skippedBinaryCount + " file(s) were left out -- see README.txt in the backup.") : ""
                 color: Qt.darker(root.popupForeground(), 1.4)
                 font.family: Style.font.family
                 font.pixelSize: Style.font.caption
                 wrapMode: Text.WordWrap
               }
+            }
+
+            PanelSeparator { foreground: root.popupForeground() }
+            PanelSectionHeader { text: "PRIVATE GITHUB BACKUP"; foreground: root.popupForeground() }
+            TextField {
+              id: exportRepoField
+              width: parent.width
+              placeholderText: "owner/private-repository"
+              foreground: root.popupForeground()
+              text: root.githubRepo
+              onTextChanged: if (text !== root.githubRepo) root.githubRepo = text
+              Keys.onEscapePressed: function(event) { root.close(); event.accepted = true }
+            }
+            Text {
+              width: parent.width
+              text: "Upload publishes only the encrypted payload as a GitHub Release asset. The helper refuses public repositories. Authenticate once with gh auth login."
+              color: Qt.darker(root.popupForeground(), 1.4)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+            Button {
+              width: parent.width
+              text: root.githubUploading ? "Uploading..." : "Upload this encrypted backup"
+              foreground: root.popupForeground()
+              bordered: true
+              enabled: !!root.exportResult && !root.githubUploading && root.githubRepo.trim() !== ""
+              onClicked: root.requestGitHubUpload()
+            }
+            Text {
+              visible: root.githubStatus !== ""
+              width: parent.width
+              text: root.githubStatus
+              color: "#4fd1c5"
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WrapAnywhere
+            }
+            Text {
+              visible: root.githubError !== ""
+              width: parent.width
+              text: root.githubError
+              color: Color.urgent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
             }
           }
 
@@ -760,6 +885,51 @@ BarWidget {
             visible: root.activeTab === "import"
 
             PanelSectionHeader { text: "SOURCE"; foreground: root.popupForeground() }
+
+            PanelSectionHeader { text: "GITHUB BACKUP"; foreground: root.popupForeground() }
+            TextField {
+              id: importRepoField
+              width: parent.width
+              placeholderText: "owner/private-repository"
+              foreground: root.popupForeground()
+              text: root.githubRepo
+              onTextChanged: if (text !== root.githubRepo) root.githubRepo = text
+              Keys.onEscapePressed: function(event) { root.close(); event.accepted = true }
+            }
+            Button {
+              width: parent.width
+              text: root.githubDownloading ? "Downloading..." : "Download latest private backup"
+              foreground: root.popupForeground()
+              bordered: true
+              enabled: !root.githubDownloading && root.githubRepo.trim() !== ""
+              onClicked: root.doGitHubDownload()
+            }
+            Text {
+              visible: root.githubStatus !== ""
+              width: parent.width
+              text: root.githubStatus
+              color: "#4fd1c5"
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+            Text {
+              visible: root.githubError !== ""
+              width: parent.width
+              text: root.githubError
+              color: Color.urgent
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
+            Text {
+              width: parent.width
+              text: "GitHub backup upload/download requires gh auth login and a private repository. GitHub stores only the encrypted payload. Downloads are saved under ~/Downloads/myvault-github/ and automatically opened for the regular passphrase/integrity/import preview."
+              color: Qt.darker(root.popupForeground(), 1.4)
+              font.family: Style.font.family
+              font.pixelSize: Style.font.caption
+              wrapMode: Text.WordWrap
+            }
 
             Repeater {
               model: root.drives
@@ -818,7 +988,7 @@ BarWidget {
             Text {
               visible: !root.drives.some(function(d) { return d.hasVault })
               width: parent.width
-              text: "No plugged-in USB stick with an OmaVault backup detected -- that's fine, it doesn't have to be one. Browse to any folder below: Downloads, a cloud-synced folder, wherever the backup landed."
+              text: "No plugged-in USB stick with an MyVault backup detected -- that's fine, it doesn't have to be one. Browse to any folder below: Downloads, a cloud-synced folder, wherever the backup landed."
               color: Qt.darker(root.popupForeground(), 1.4)
               font.family: Style.font.family
               font.pixelSize: Style.font.caption
@@ -830,12 +1000,14 @@ BarWidget {
               spacing: Style.space(6)
 
               TextField {
+                id: importPathField
                 width: parent.width - browseImportButton.width - parent.spacing
                 placeholderText: "...or paste a snapshot folder path, then press Enter"
                 foreground: root.popupForeground()
                 text: root.customImportText
                 onTextChanged: if (text !== root.customImportText) root.customImportText = text
                 onAccepted: root.openImportSource(text)
+                Keys.onEscapePressed: function(event) { root.close(); event.accepted = true }
               }
 
               Button {
@@ -893,6 +1065,7 @@ BarWidget {
                   spacing: Style.space(6)
 
                   TextField {
+                    id: unlockPassphraseField
                     width: parent.width - unlockButton.width - parent.spacing
                     placeholderText: "Passphrase"
                     password: true
@@ -900,6 +1073,7 @@ BarWidget {
                     text: root.importUnlockPassphrase
                     onTextChanged: if (text !== root.importUnlockPassphrase) root.importUnlockPassphrase = text
                     onAccepted: root.doUnlock()
+                    Keys.onEscapePressed: function(event) { root.close(); event.accepted = true }
                   }
                   Button {
                     id: unlockButton
@@ -959,7 +1133,7 @@ BarWidget {
 
                 Text {
                   width: parent.width
-                  text: "Existing files this would overwrite are copied to ~/.local/state/omavault/pre-restore-<timestamp>/ first. Restoring only adds/overwrites -- it never deletes anything already on this machine."
+                  text: "Existing files this would overwrite are copied to ~/.local/state/myvault/pre-restore-<timestamp>/ first. Restoring only adds/overwrites -- it never deletes anything already on this machine."
                   color: Qt.darker(root.popupForeground(), 1.4)
                   font.family: Style.font.family
                   font.pixelSize: Style.font.caption
@@ -995,6 +1169,17 @@ BarWidget {
                 wrapMode: Text.WrapAnywhere
               }
               Text {
+                visible: root.importResult && (root.importResult.categories || []).some(function(c) { return c.id === "apps" })
+                width: parent.width
+                text: "App inventory restored. Review the lists, then run in a terminal: bash "
+                  + Quickshell.env("HOME") + "/.config/omarchy/plugins/io.github.joyfuloak.myvault/bin/install-apps.sh"
+                  + " — this separately prompts before installing packages. Inventories do not contain app binaries."
+                color: Qt.darker(root.popupForeground(), 1.4)
+                font.family: Style.font.family
+                font.pixelSize: Style.font.caption
+                wrapMode: Text.WordWrap
+              }
+              Text {
                 visible: root.importResult && root.importResult.needsRestart
                 width: parent.width
                 text: "Run \"omarchy-restart-shell\" for the restored bar/plugin settings to take effect."
@@ -1020,6 +1205,18 @@ BarWidget {
         background: Color.background
         onCanceled: root.confirmingImport = false
         onConfirmed: { root.confirmingImport = false; root.doImport() }
+      }
+
+      ConfirmDialog {
+        anchors.fill: parent
+        opened: root.confirmingGitHubUpload
+        message: "Upload only the encrypted backup payload to private GitHub repository " + root.githubRepo + "? Public repositories are blocked. Keep the passphrase safe; GitHub cannot recover it."
+        confirmText: "Upload encrypted backup"
+        cancelText: "Cancel"
+        foreground: root.popupForeground()
+        background: Color.background
+        onCanceled: root.confirmingGitHubUpload = false
+        onConfirmed: { root.confirmingGitHubUpload = false; root.doGitHubUpload() }
       }
 
       // In-popup folder browser -- covers the whole popup while active. See
@@ -1087,11 +1284,13 @@ BarWidget {
           }
 
           TextField {
+            id: browseFilterField
             width: parent.width
             placeholderText: "Search this folder..."
             foreground: root.popupForeground()
             text: root.browseFilter
             onTextChanged: if (text !== root.browseFilter) root.browseFilter = text
+            Keys.onEscapePressed: function(event) { root.close(); event.accepted = true }
           }
 
           Text {

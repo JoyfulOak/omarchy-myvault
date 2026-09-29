@@ -1,6 +1,6 @@
 #!/bin/bash
 # Outputs a JSON array of mounted removable drives (USB sticks and similar),
-# each with free space and, if it already carries an omavault/ folder, the
+# each with free space and, if it already carries an myvault/ folder, the
 # list of snapshots found on it (so Import can offer them straight away).
 set -u
 cd "$(dirname "${BASH_SOURCE[0]}")" || exit 1
@@ -26,7 +26,7 @@ while IFS= read -r drive; do
   [ -z "$drive" ] && continue
   mnt=$(jq -r '.path' <<<"$drive")
   snaps="[]"
-  vault="$mnt/omavault"
+  vault="$mnt/myvault"
   if [ -d "$vault" ]; then
     for d in "$vault"/*/; do
       [ -d "$d" ] || continue

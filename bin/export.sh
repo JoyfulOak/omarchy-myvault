@@ -7,7 +7,7 @@
 # none is given), and every one of those files, manifest.json included, is
 # packed into payload.tar and symmetrically encrypted (gpg, AES256) as
 # payload.tar.gpg. Only that encrypted blob is ever written to
-# <destination-root>/omavault/<snapshot>/ -- the plaintext scratch dir is
+# <destination-root>/myvault/<snapshot>/ -- the plaintext scratch dir is
 # built and torn down entirely under $XDG_RUNTIME_DIR (RAM-backed tmpfs,
 # never the destination or a disk-backed tmp), and is removed via a trap
 # on every exit path, success or failure, so a mid-run error can't leave
@@ -34,7 +34,7 @@ fail() { jq -n --arg e "$1" '{ok:false, error:$e}'; exit 1; }
 # copying happens.
 IFS= read -r passphrase
 if [ -z "${passphrase:-}" ]; then
-  fail "A passphrase is required -- every OmaVault backup is encrypted, there is no plain-text export."
+  fail "A passphrase is required -- every MyVault backup is encrypted, there is no plain-text export."
 fi
 
 IFS=',' read -r -a catIds <<<"$catsArg"
@@ -57,6 +57,16 @@ while IFS=$'\t' read -r id label _desc _def; do catLabel["$id"]="$label"; done <
 projectedBytes=0
 for id in "${catIds[@]}"; do
   [ -n "$id" ] || continue
+  if [ "$id" = "apps" ]; then
+    continue
+  elif [ "$id" = "documents" ]; then
+    src="$HOME_DIR/Documents"
+    [ -d "$src" ] || continue
+    b=$(find "$src" -type f -printf '%s\n' 2>/dev/null | awk '{s+=$1} END{print s+0}')
+    case "$b" in ''|*[!0-9]*) fail "Could not estimate Documents size." ;; esac
+    projectedBytes=$((projectedBytes + b))
+    continue
+  fi
   while IFS=$'\t' read -r src rel kind extraExclude; do
     [ -z "$src" ] && continue
     if [ "$kind" = "file" ]; then
@@ -68,7 +78,7 @@ for id in "${catIds[@]}"; do
       # rsync or an unparseable stats line falling back to "0 bytes"
       # would let an actually-oversized category slip straight through
       # this gate instead of being caught by it.
-      if ! stats=$(rsync -a --copy-links --dry-run --stats "${BINARY_RSYNC_EXCLUDES[@]}" $extraExclude "$src/" /tmp/omavault-count-target-unused/ 2>/dev/null); then
+      if ! stats=$(rsync -a --copy-links --dry-run --stats "${BINARY_RSYNC_EXCLUDES[@]}" $extraExclude "$src/" /tmp/myvault-count-target-unused/ 2>/dev/null); then
         fail "Could not estimate the size of \"$rel\" -- refusing to export without a reliable size check."
       fi
       b=$(awk -F': ' '/Total transferred file size/ {gsub(/[, bytes]/,"",$2); print $2}' <<<"$stats")
@@ -80,7 +90,7 @@ for id in "${catIds[@]}"; do
   done < <(category_entries "$id")
 done
 if [ "$projectedBytes" -gt "$MAX_BACKUP_BYTES" ]; then
-  fail "Selected categories total $projectedBytes bytes, over the $((MAX_BACKUP_BYTES / 1024 / 1024)) MiB limit for a config backup -- deselect some categories."
+  fail "Selected categories total $projectedBytes bytes, over the $((MAX_BACKUP_BYTES / 1024 / 1024)) MiB limit for this backup -- deselect some categories."
 fi
 
 # ---- Private tmpfs scratch dir. Everything plaintext lives only here,
@@ -92,11 +102,11 @@ fi
 # private, so silently degrading to it would put plaintext config
 # contents on durable storage without ever telling the caller.
 scratchBase=$(verified_runtime_dir) || fail "Refusing to export: $scratchBase"
-snapDir=$(mktemp -d "$scratchBase/omavault-export-XXXXXX") || fail "Could not create a private scratch directory."
+snapDir=$(mktemp -d "$scratchBase/myvault-export-XXXXXX") || fail "Could not create a private scratch directory."
 chmod 700 "$snapDir"
 trap 'passphrase=""; rm -rf "$snapDir"' EXIT
 
-vaultRoot="$destRoot/omavault"
+vaultRoot="$destRoot/myvault"
 if [ "$mode" = "latest" ]; then
   snapName="latest"
 else
@@ -126,6 +136,37 @@ for id in "${catIds[@]}"; do
   catFiles=0
   catBytes=0
   hadEntry=0
+  if [ "$id" = "apps" ]; then
+    inventoryTarget="$snapDir/app-inventory"
+    capture_app_inventory "$inventoryTarget"
+    catFiles=$(find "$inventoryTarget" -type f | wc -l)
+    catBytes=$(find "$inventoryTarget" -type f -printf '%s\n' | awk '{s+=$1} END{print s+0}')
+    stagedBytes=$((stagedBytes + catBytes))
+    [ "$stagedBytes" -le "$MAX_BACKUP_BYTES" ] || fail "App inventory exceeds the $((MAX_BACKUP_BYTES / 1024 / 1024)) MiB backup limit."
+    categoriesJson=$(jq --arg id "$id" --arg label "$label" '. + [{id:$id, label:$label}]' <<<"$categoriesJson")
+    continue
+  fi
+  if [ "$id" = "documents" ]; then
+    src="$HOME_DIR/Documents"
+    rel="Documents"
+    target="$snapDir/$rel"
+    mkdir -p "$target"
+    while IFS= read -r -d '' fsrc; do
+      fname="${fsrc#"$src"/}"
+      case "$fname" in *$'\n'*|*,*) skippedList+=("Documents/$fname (unsupported comma/newline in path)"); continue ;; esac
+      ftarget="$target/$fname"
+      mkdir -p "$(dirname "$ftarget")"
+      if ( ulimit -f $((MAX_BACKUP_BYTES / 512)); cp -p -- "$fsrc" "$ftarget" ) 2>/dev/null; then
+        sz=$(stat -c%s -- "$ftarget" 2>/dev/null || echo 0)
+        catFiles=$((catFiles + 1)); catBytes=$((catBytes + sz)); stagedBytes=$((stagedBytes + sz))
+        [ "$stagedBytes" -le "$MAX_BACKUP_BYTES" ] || fail "Documents exceeded the $((MAX_BACKUP_BYTES / 1024 / 1024)) MiB backup limit."
+      else
+        errors+=("Documents: could not stage \"$fname\"")
+      fi
+    done < <(find "$src" -type f -print0 2>/dev/null)
+    categoriesJson=$(jq --arg id "$id" --arg label "$label" '. + [{id:$id, label:$label}]' <<<"$categoriesJson")
+    continue
+  fi
   while IFS=$'\t' read -r src rel kind extraExclude; do
     [ -z "$src" ] && continue
     if [ "$kind" = "file" ]; then
@@ -157,10 +198,10 @@ for id in "${catIds[@]}"; do
           # catches the aggregate the moment it's crossed.
           stagedBytes=$((stagedBytes + sz))
           if [ "$stagedBytes" -gt "$MAX_BACKUP_BYTES" ]; then
-            fail "Staging exceeded the $((MAX_BACKUP_BYTES / 1024 / 1024)) MiB limit for a config backup while copying \"$rel\" -- deselect some categories."
+            fail "Staging exceeded the $((MAX_BACKUP_BYTES / 1024 / 1024)) MiB limit for this backup while copying \"$rel\" -- deselect some categories."
           fi
         else
-          fail "Could not stage \"$rel\" -- it may exceed the $((MAX_BACKUP_BYTES / 1024 / 1024)) MiB per-file limit for a config backup (a symlink to something unexpectedly large?)."
+          fail "Could not stage \"$rel\" -- it may exceed the $((MAX_BACKUP_BYTES / 1024 / 1024)) MiB per-file limit for this backup (a symlink to something unexpectedly large?)."
         fi
       else
         skippedList+=("$rel (source: $src)")
@@ -223,7 +264,7 @@ for id in "${catIds[@]}"; do
             catFiles=$((catFiles + 1)); catBytes=$((catBytes + sz))
             stagedBytes=$((stagedBytes + sz))
             if [ "$stagedBytes" -gt "$MAX_BACKUP_BYTES" ]; then
-              fail "Staging exceeded the $((MAX_BACKUP_BYTES / 1024 / 1024)) MiB limit for a config backup while copying \"$rel/$fname\" -- deselect some categories."
+              fail "Staging exceeded the $((MAX_BACKUP_BYTES / 1024 / 1024)) MiB limit for this backup while copying \"$rel/$fname\" -- deselect some categories."
             fi
           else
             errors+=("$label: could not stage \"$fname\" (source: $fsrc)")
@@ -248,6 +289,7 @@ done
 while IFS= read -r -d '' f; do
   case "$f" in
     "$snapDir"/manifest.json|"$snapDir"/README.txt|"$snapDir"/SHA256SUMS) continue ;;
+    "$snapDir"/Documents/*) continue ;; # documents are intentionally allowed to be binary
   esac
   if ! is_text_file "$f"; then
     skippedList+=("${f#"$snapDir"/} (binary content)")
@@ -299,12 +341,12 @@ totalBytes=$(jq '[.[].bytes] | add // 0' <<<"$categoriesJson")
 # caught here rather than assumed. Belt-and-suspenders, not the only
 # guard -- but nothing gets packed without passing it regardless.
 if [ "$totalBytes" -gt "$MAX_BACKUP_BYTES" ]; then
-  fail "Staged backup came to $totalBytes bytes, over the $((MAX_BACKUP_BYTES / 1024 / 1024)) MiB limit for a config backup -- deselect some categories."
+  fail "Staged backup came to $totalBytes bytes, over the $((MAX_BACKUP_BYTES / 1024 / 1024)) MiB limit for this backup -- deselect some categories."
 fi
 
 # ---- README.txt: human-readable even without the plugin installed ----
 {
-  echo "OmaVault backup"
+  echo "MyVault backup"
   echo "================"
   echo
   echo "Created:  $(date -Iseconds)"
@@ -312,7 +354,7 @@ fi
   echo "Mode:     $mode"
   echo
   echo "This backup is encrypted (AES-256 via gpg) -- decrypt it with the"
-  echo "passphrase it was created with, either through OmaVault's Import,"
+  echo "passphrase it was created with, either through MyVault's Import,"
   echo "or by hand:"
   echo "  gpg -d payload.tar.gpg | tar -x"
   echo "Once decrypted, the files listed below are exactly what they look"
@@ -332,7 +374,7 @@ fi
   echo "backup wasn't corrupted or altered with:"
   echo "  cd \"$(basename "$snapDir")\" && sha256sum -c SHA256SUMS"
   echo
-  echo "To restore: open OmaVault on the new machine, choose Import, point"
+  echo "To restore: open MyVault on the new machine, choose Import, point"
   echo "it at this folder (or just plug in this stick, it will be found"
   echo "automatically), and pick what to bring back."
   if [ "${#skippedList[@]}" -gt 0 ]; then
@@ -344,7 +386,7 @@ fi
 
 manifest=$(jq -n \
   --arg version "1" \
-  --arg tool "omavault" \
+  --arg tool "myvault" \
   --arg createdAt "$(date -Iseconds)" \
   --arg hostname "$(hostname)" \
   --arg mode "$mode" \
@@ -370,8 +412,8 @@ if ! ( cd "$snapDir" && tar --exclude=.payload.tar -cf "$payloadTar" . ); then
   fail "Could not package the backup for encryption."
 fi
 
-# ---- finalDir/finalFile are predictable paths (omavault/latest or
-# omavault/snapshot-<timestamp>), so a pre-existing symlink planted at
+# ---- finalDir/finalFile are predictable paths (myvault/latest or
+# myvault/snapshot-<timestamp>), so a pre-existing symlink planted at
 # either one must never be followed: gpg's own -o open (no O_EXCL) and a
 # naive mkdir -p would both happily write/truncate through it into
 # whatever real file or directory the symlink points at. Fail closed on

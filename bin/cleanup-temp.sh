@@ -7,6 +7,6 @@
 set -u
 dir="${1:-}"
 case "$dir" in
-  */omavault-decrypt-*) [ -d "$dir" ] && rm -rf -- "$dir" ;;
+  */myvault-decrypt-*) [ -d "$dir" ] && rm -rf -- "$dir" ;;
 esac
 echo '{"ok":true}'

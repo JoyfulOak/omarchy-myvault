@@ -1,20 +1,20 @@
 {
   "schemaVersion": 1,
-  "id": "io.github.anelcelik.omavault",
-  "name": "OmaVault",
-  "version": "1.0.6",
-  "author": "anel",
+  "id": "io.github.joyfuloak.myvault",
+  "name": "MyVault",
+  "version": "2026.09.2",
+  "author": "JoyfulOak",
   "license": "MIT",
-  "description": "Back up your Omarchy settings, Hyprland config, terminal configs and installed plugins as an AES-256 encrypted, checksummed folder tree you can carry on a USB stick and restore on a fresh machine. A password is required every time -- there is no plain-text option.",
+  "description": "Encrypted, checksummed Omarchy migration backups for settings, Hyprland, plugins, Documents and portable app/package inventories.",
   "kinds": [
     "bar-widget"
   ],
   "entryPoints": {
-    "barWidget": "OmaVault.qml"
+    "barWidget": "MyVault.qml"
   },
   "barWidget": {
-    "displayName": "OmaVault",
-    "description": "Export/import your Omarchy setup to/from a USB stick, encrypted with a required password.",
+    "displayName": "MyVault",
+    "description": "Encrypted export/import for Omarchy settings, Hyprland, Documents, plugins and app/package inventories; private GitHub Release transfer supported.",
     "category": "Compositor",
     "aliases": ["backup", "restore", "vault", "export", "import"],
     "allowMultiple": false,

@@ -2,7 +2,7 @@
 # Usage: import.sh <snapshot-dir> <comma-separated-category-ids>
 # Verifies checksums for just the selected categories, backs up whatever
 # already lives at each real destination (into
-# ~/.local/state/omavault/pre-restore-<timestamp>/), then copies the
+# ~/.local/state/myvault/pre-restore-<timestamp>/), then copies the
 # snapshot's files into place. Never deletes existing live files that
 # aren't present in the snapshot -- restore only adds/overwrites.
 set -u
@@ -23,7 +23,7 @@ listTmpFiles=()
 trap 'rm -f "${listTmpFiles[@]:-}"' EXIT
 
 [ -n "$snapDir" ] && [ -d "$snapDir" ] || fail "Snapshot folder not found."
-[ -f "$snapDir/manifest.json" ] || fail "No manifest.json -- not an OmaVault snapshot."
+[ -f "$snapDir/manifest.json" ] || fail "No manifest.json -- not a MyVault snapshot."
 [ -n "$catsArg" ] || fail "No categories selected."
 
 IFS=',' read -r -a catIds <<<"$catsArg"
@@ -154,7 +154,7 @@ if [ "${#relFiles[@]}" -gt 0 ]; then
   fi
 fi
 
-backupDir="$HOME_DIR/.local/state/omavault/pre-restore-$(date +%Y%m%d_%H%M%S)"
+backupDir="$HOME_DIR/.local/state/myvault/pre-restore-$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$backupDir"
 
 categoriesJson="[]"
